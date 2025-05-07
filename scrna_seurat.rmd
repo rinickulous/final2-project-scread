@@ -1,0 +1,245 @@
+---
+title: "Final2_Project_scrnaseq"
+output:
+  html_document: default
+  pdf_document: default
+date: "2025-04-18"
+---
+
+```{r setup, include=FALSE}
+library(Seurat)
+library(patchwork)
+library(tidyverse)
+
+
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+
+```{r}
+
+# Case 1
+Case1_YF <- Read10X(data.dir = "data/Case1-YF")
+Case1_YF <- CreateSeuratObject(counts = Case1_YF, project = "Case1_YF", min.cells = 3, min.features = 200)
+
+Case1_ZY <- Read10X(data.dir = "data/Case1-ZY")
+Case1_ZY <- CreateSeuratObject(counts = Case1_ZY, project = "Case1_ZY", min.cells = 3, min.features = 200)
+
+# Case 2
+Case2_YF <- Read10X(data.dir = "data/Case2-YF")
+Case2_YF <- CreateSeuratObject(counts = Case2_YF, project = "Case2_YF", min.cells = 3, min.features = 200)
+
+Case2_ZC <- Read10X(data.dir = "data/Case2-ZC")
+Case2_ZC <- CreateSeuratObject(counts = Case2_ZC, project = "Case2_ZC", min.cells = 3, min.features = 200)
+
+Case2_ZY <- Read10X(data.dir = "data/Case2-ZY")
+Case2_ZY <- CreateSeuratObject(counts = Case2_ZY, project = "Case2_ZY", min.cells = 3, min.features = 200)
+
+# Case 3
+Case3_YF <- Read10X(data.dir = "data/Case3-YF")
+Case3_YF <- CreateSeuratObject(counts = Case3_YF, project = "Case3_YF", min.cells = 3, min.features = 200)
+
+Case3_ZY <- Read10X(data.dir = "data/Case3-ZY")
+Case3_ZY <- CreateSeuratObject(counts = Case3_ZY, project = "Case3_ZY", min.cells = 3, min.features = 200)
+
+# Case 4
+Case4_ZY <- Read10X(data.dir = "data/Case4-ZY")
+Case4_ZY <- CreateSeuratObject(counts = Case4_ZY, project = "Case4_ZY", min.cells = 3, min.features = 200)
+
+```
+
+## QC 
+
+
+```{r}
+
+# 1) install from GitHub
+if (!requireNamespace("remotes", quietly=TRUE)) install.packages("remotes")
+remotes::install_github('chris-mcginnis-ucsf/DoubletFinder', force = TRUE)
+
+# 2) load it
+library(DoubletFinder)
+library(ggplot2)
+library(DoubletFinder)
+
+
+# List of all 8 samples (assuming they've been created already)
+samples <- list(
+  Case1_YF, Case1_ZY, Case2_YF, Case2_ZC,
+  Case2_ZY, Case3_YF, Case3_ZY, Case4_ZY
+)
+names(samples) <- c(
+  "Case1_YF", "Case1_ZY", "Case2_YF", "Case2_ZC",
+  "Case2_ZY", "Case3_YF", "Case3_ZY", "Case4_ZY"
+)
+
+# Create empty list to store filtered objects and QC stats
+filtered_samples <- list()
+qc_summary <- data.frame()
+
+# Loop over each sample
+for (sample_name in names(samples)) {
+  obj <- samples[[sample_name]]
+  
+  # QC metrics
+  obj[["percent.mt"]] <- PercentageFeatureSet(obj, pattern = "^MT-")
+  
+  # Store counts before filtering
+  pre_filter_cells <- ncol(obj)
+  pre_filter_genes <- nrow(obj)
+
+  # DoubletFinder (minimal config)
+  obj <- NormalizeData(obj)
+  obj <- FindVariableFeatures(obj)
+  obj <- ScaleData(obj)
+  obj <- RunPCA(obj)
+  
+  sweep.res.list <- paramSweep_v3(obj, PCs = 1:10, sct = FALSE)
+  sweep.stats <- summarizeSweep(sweep.res.list, GT = FALSE)
+  bcmvn <- find.pK(sweep.stats)
+
+  best.pK <- as.numeric(as.character(bcmvn[which.max(bcmvn$BCmetric), "pK"]))
+  nExp <- round(0.075 * ncol(obj))  # estimate 7.5% doublets
+
+  obj <- doubletFinder_v3(obj, PCs = 1:10, pN = 0.25, pK = best.pK, nExp = nExp, reuse.pANN = FALSE, sct = FALSE)
+
+  # The column name with classifications will have 'DF.classifications' in it
+  df_col <- grep("DF.classifications", colnames(obj@meta.data), value = TRUE)
+  obj$doublet_status <- obj[[df_col]]
+
+  # Filter cells
+  obj <- subset(obj, subset = nFeature_RNA > 200 & nFeature_RNA < 6000 & percent.mt < 15 & doublet_status == "Singlet")
+
+  # Store counts after filtering
+  post_filter_cells <- ncol(obj)
+  post_filter_genes <- nrow(obj)
+
+  # Append summary
+  qc_summary <- rbind(
+    qc_summary,
+    data.frame(
+      Sample = sample_name,
+      Cells_Before = pre_filter_cells,
+      Genes_Before = pre_filter_genes,
+      Cells_After = post_filter_cells,
+      Genes_After = post_filter_genes
+    )
+  )
+
+  # Store the filtered object
+  filtered_samples[[sample_name]] <- obj
+}
+
+
+```
+
+```{r}
+library(ggplot2)
+DimPlot(combined, label = TRUE) + ggtitle("Merged TST + SC")
+```
+
+
+```{r}
+# make sure SCT is your default assay
+DefaultAssay(combined) <- "SCT"
+
+# 1) Prep for SCT‐based marker testing
+combined <- PrepSCTFindMarkers(
+  object = combined,
+  assay  = "SCT"          # this is the default, but explicit is good
+)
+
+# 2) Rerun FindAllMarkers
+markers <- FindAllMarkers(
+  object           = combined,
+  assay            = "SCT",
+  only.pos         = TRUE,
+  min.pct          = 0.25,
+  logfc.threshold  = 0.25
+)
+
+# 3) Inspect
+head(markers)
+
+
+```
+```{r}
+head(combined@meta.data)
+```
+
+```{r featureplot, fig.width=12, fig.height=10}
+
+plot_feature_batches <- function(object, features, batch_size = 6, ncol = 3, ...) {
+  num_features <- length(features)
+  num_batches <- ceiling(num_features / batch_size)
+  
+  for (i in seq_len(num_batches)) {
+    start_idx <- (i - 1) * batch_size + 1
+    end_idx <- min(i * batch_size, num_features)
+    feature_subset <- features[start_idx:end_idx]
+    
+    print(
+      FeaturePlot(object, features = feature_subset, ncol = ncol, ...) +
+        ggtitle(paste("Genes", start_idx, "to", end_idx)) +
+        theme(plot.title = element_text(size = 14, face = "bold"))
+    )
+  }
+}
+
+# Assuming top3 was already created
+top_genes <- unique(top3$gene)
+
+# Plot in batches of 6 genes, 3 per row
+plot_feature_batches(combined, features = top_genes, batch_size = 6, ncol = 3)
+
+```
+
+
+
+```{r}
+sig.markers <- markers %>%
+  filter(p_val_adj < 0.05, avg_log2FC > 0.25)
+```
+
+
+```{r}
+library(dplyr)
+
+top5 <- sig.markers %>%
+  group_by(cluster) %>%
+  slice_max(order_by = avg_log2FC, n = 5) %>%
+  ungroup()
+
+top5
+
+```
+
+
+```{r fig.width=12, fig.height=10}
+
+DoHeatmap(
+  object   = combined,
+  features = top5$gene,
+  group.by = "seurat_clusters"
+) + NoLegend()
+
+```
+
+
+```{r}
+
+```
+
+```{r}
+```
+
+
+```{r}
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
