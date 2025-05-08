@@ -1,5 +1,7 @@
 # Final Project: Single Cell RNA-seq Analysis
 
+# Paper 2 "Single cell transcriptomic analyses implicate an immunosuppressive tumor microenvironment in pancreatic cancer liver metastasis"
+
 ## 📁 Project Structure
 
 - `data/`: Raw or unpacked case-specific expression data.
